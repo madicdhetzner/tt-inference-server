@@ -172,8 +172,8 @@ int main(int argc, char* argv[]) {
   // If we skip this and Drogon fails to bind later, workers are already running
   // and the warmup signal queue gets removed mid-lifecycle — causing a crash.
   if (!probePort(host, port)) {
-    TT_LOG_ERROR("[Main] Port {} is already in use. "
-                 "Stop the existing server before starting a new one.", port);
+    TT_LOG_CRITICAL("[Main] Port {} is already in use. "
+                    "Stop the existing server before starting a new one.", port);
     return 1;
   }
   TT_LOG_INFO("[Main] Port {} is available", port);
