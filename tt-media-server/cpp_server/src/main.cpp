@@ -54,7 +54,8 @@ bool probePort(const std::string& host, uint16_t port) {
   struct sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = INADDR_ANY;
+  if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0)
+    addr.sin_addr.s_addr = INADDR_ANY;
   bool available = (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
   ::close(sock);
   return available;
