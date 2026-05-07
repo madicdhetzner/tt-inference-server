@@ -42,6 +42,24 @@ namespace {
 
 volatile std::sig_atomic_t gShutdownRequested = 0;
 
+// Returns true if the port is available, false if already in use.
+bool probePort(const std::string& host, uint16_t port) {
+  int sock = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    TT_LOG_ERROR("[Main] Failed to create probe socket: {}", strerror(errno));
+    return false;
+  }
+  int reuse = 1;
+  ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+  struct sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  addr.sin_addr.s_addr = INADDR_ANY;
+  bool available = (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  ::close(sock);
+  return available;
+}
+
 void signalHandler(int signal) {
   TT_LOG_WARN("\n[Main] Received signal {}, initiating shutdown...", signal);
   gShutdownRequested = 1;
@@ -152,28 +170,12 @@ int main(int argc, char* argv[]) {
   // Pre-flight port probe: verify the port is available before forking workers.
   // If we skip this and Drogon fails to bind later, workers are already running
   // and the warmup signal queue gets removed mid-lifecycle — causing a crash.
-  {
-    int probe = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (probe < 0) {
-      TT_LOG_ERROR("[Main] Failed to create probe socket: {}", strerror(errno));
-      return 1;
-    }
-    int reuse = 1;
-    ::setsockopt(probe, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    struct sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-    if (::bind(probe, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-      TT_LOG_ERROR("[Main] Port {} is already in use ({}). "
-                   "Stop the existing server before starting a new one.",
-                   port, strerror(errno));
-      ::close(probe);
-      return 1;
-    }
-    ::close(probe);
-    TT_LOG_INFO("[Main] Port {} is available", port);
+  if (!probePort(host, port)) {
+    TT_LOG_ERROR("[Main] Port {} is already in use. "
+                 "Stop the existing server before starting a new one.", port);
+    return 1;
   }
+  TT_LOG_INFO("[Main] Port {} is available", port);
 
   const std::string shmName = tt::config::workerMetricsShmName();
   const size_t numWorkers = tt::config::numWorkers();
