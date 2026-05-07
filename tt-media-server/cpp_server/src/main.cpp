@@ -17,6 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include "api/error_response.hpp"
 #include "api/route_registry.hpp"
 #include "config/defaults.hpp"
@@ -146,6 +149,32 @@ int main(int argc, char* argv[]) {
   // (initializeServices() starts the WorkerManager which fork+execv's
   // workers). The unique_ptr below owns the lifecycle: its destructor
   // munmaps and shm_unlinks on scope exit, so there is no explicit teardown.
+  // Pre-flight port probe: verify the port is available before forking workers.
+  // If we skip this and Drogon fails to bind later, workers are already running
+  // and the warmup signal queue gets removed mid-lifecycle — causing a crash.
+  {
+    int probe = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (probe < 0) {
+      TT_LOG_ERROR("[Main] Failed to create probe socket: {}", strerror(errno));
+      return 1;
+    }
+    int reuse = 1;
+    ::setsockopt(probe, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    if (::bind(probe, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+      TT_LOG_ERROR("[Main] Port {} is already in use ({}). "
+                   "Stop the existing server before starting a new one.",
+                   port, strerror(errno));
+      ::close(probe);
+      return 1;
+    }
+    ::close(probe);
+    TT_LOG_INFO("[Main] Port {} is available", port);
+  }
+
   const std::string shmName = tt::config::workerMetricsShmName();
   const size_t numWorkers = tt::config::numWorkers();
   auto shm = tt::worker::WorkerMetricsShm::create(shmName, numWorkers);
