@@ -30,7 +30,7 @@ class BlazeMemoryManager : public MemoryManager {
  private:
   tt::runners::IPipelineManager& pipelineManager;
   std::unordered_set<uint32_t> allocating;
-  std::unordered_map</*taskId*/ uint32_t, /*slotId*/ uint32_t> cancelling;
+  std::unordered_map</*taskId*/ uint32_t, /*slotId*/ uint32_t> evicting;
   onEvictCb onEvict;
   std::optional<domain::ManageMemoryTask> pendingRetry;
 };

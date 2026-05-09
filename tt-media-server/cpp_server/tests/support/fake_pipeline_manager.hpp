@@ -53,18 +53,27 @@ class FakePipelineManager : public tt::runners::IPipelineManager {
     outputs_.push({slotId, tokenId, isComplete});
   }
 
+  /** Make push_request fail for SUBMIT/CONTINUE on this slot. */
+  void whenPushFails(uint32_t slotId) { pushFailSlots_.insert(slotId); }
+
   /** Clear all pre-programmed state. */
   void reset() {
     allocResponses_.clear();
     while (!responses_.empty()) responses_.pop();
     while (!outputs_.empty()) outputs_.pop();
     submittedSlots_.clear();
+    evictedSlots_.clear();
+    pushFailSlots_.clear();
   }
 
   // Inspection API -----------------------------------------------------------
 
   bool wasSubmitted(uint32_t slotId) const {
     return submittedSlots_.count(slotId) > 0;
+  }
+
+  bool wasEvicted(uint32_t slotId) const {
+    return evictedSlots_.count(slotId) > 0;
   }
 
   size_t submitCount() const { return submittedSlots_.size(); }
@@ -86,11 +95,15 @@ class FakePipelineManager : public tt::runners::IPipelineManager {
       }
       case pm::RequestType::SUBMIT:
       case pm::RequestType::CONTINUE: {
+        if (pushFailSlots_.count(req.slot_id) > 0) {
+          return false;
+        }
         submittedSlots_.insert(req.slot_id);
         return true;
       }
       case pm::RequestType::CANCEL: {
         // Evict ack
+        evictedSlots_.insert(req.slot_id);
         responses_.push(
             {.request_id = req.request_id, .slot_id = req.slot_id});
         return true;
@@ -123,6 +136,8 @@ class FakePipelineManager : public tt::runners::IPipelineManager {
   std::queue<pm::PMResponse> responses_;
   std::queue<pm::OutputMessage> outputs_;
   std::unordered_set<uint32_t> submittedSlots_;
+  std::unordered_set<uint32_t> evictedSlots_;
+  std::unordered_set<uint32_t> pushFailSlots_;
 };
 
 }  // namespace tt::testing

@@ -52,8 +52,9 @@ namespace utils = blaze_utils;
 
 BlazeRunner::BlazeRunner(const config::LLMConfig& config,
                          ipc::IResultQueue* resultQueue,
-                         tt::ipc::ITaskQueue* taskQueue)
-    : BlazeRunner(config, resultQueue, taskQueue,
+                         tt::ipc::ITaskQueue* taskQueue,
+                         tt::ipc::ICancelQueue* cancelQueue)
+    : BlazeRunner(config, resultQueue, taskQueue, cancelQueue,
                   std::make_unique<PipelineManagerAdapter>(
                       makePipelineConfig(config),
                       pm::ManagerParams{
@@ -63,11 +64,13 @@ BlazeRunner::BlazeRunner(const config::LLMConfig& config,
 BlazeRunner::BlazeRunner(const config::LLMConfig& config,
                          ipc::IResultQueue* resultQueue,
                          tt::ipc::ITaskQueue* taskQueue,
+                         tt::ipc::ICancelQueue* cancelQueue,
                          std::unique_ptr<IPipelineManager> pipelineManager)
     : config(config),
       stopTokenIds(config.stop_token_ids.begin(), config.stop_token_ids.end()),
       resultQueue(resultQueue),
       taskQueue(taskQueue),
+      cancelQueue(cancelQueue),
       lastOutputTime(std::chrono::steady_clock::now()),
       outputHangTimeout(tt::config::outputHangTimeoutMs()) {
   TT_LOG_INFO("BlazeRunner: PipelineManager injected, calling start()...");
@@ -163,7 +166,7 @@ bool BlazeRunner::warmup() {
   }
 
   pipelineManager->push_request(
-      utils::makeCancelRequest(warmupCancelRequestId, slotId));
+      utils::makeEvictRequest(warmupCancelRequestId, slotId));
   pm::PMResponse cancelResponse{};
   const auto cancelDeadline = std::chrono::steady_clock::now() + timeout;
   while (!pipelineManager->try_pop_response(cancelResponse)) {
@@ -186,6 +189,7 @@ void BlazeRunner::step() {
   tt::worker::SingleProcessWorkerMetrics::instance().updateStepHeartbeat();
   drainAndHandleMemoryResponses();
   drainAndHandleOutputs();
+  drainAndHandleCancelRequests();
   auto memoryRequest = getMemoryRequest();
   if (memoryRequest.has_value()) {
     TT_LOG_DEBUG("[BlazeRunner] step: got memoryRequest taskId={}, action={}",
@@ -234,13 +238,65 @@ std::unique_ptr<tt::domain::llm::Sequence> BlazeRunner::getRequest() {
   return req;
 }
 
-inline void BlazeRunner::handleMemoryRequest(
+void BlazeRunner::drainAndHandleCancelRequests() {
+  std::vector<uint32_t> cancels;
+  cancelQueue->tryPopAll(cancels);
+  for (uint32_t taskId : cancels) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] drainAndHandleCancelRequests: got cancel taskId={}",
+        taskId);
+    handleCancelRequest(taskId);
+  }
+}
+
+void BlazeRunner::handleMemoryRequest(
     const tt::domain::ManageMemoryTask& request) {
+  if (cancelTombstones.consumeCancelTombstone(request.taskId)) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] handleMemoryRequest: dropping cancelled taskId={}",
+        request.taskId);
+    memoryManager->handleResponse(request.taskId,
+                                  tt::domain::INVALID_SLOT_ID);
+    return;
+  }
   memoryManager->handleRequest(request);
 }
 
-inline void BlazeRunner::handleMemoryResponse(const pm::PMResponse& response) {
+void BlazeRunner::handleMemoryResponse(const pm::PMResponse& response) {
+  if (cancelTombstones.consumeCancelTombstone(response.request_id)) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] handleMemoryResponse: dropping cancelled "
+        "taskId={}",
+        response.request_id);
+    return;
+  }
   memoryManager->handleResponse(response.request_id, response.slot_id);
+}
+
+void BlazeRunner::handleCancelRequest(uint32_t taskId) {
+  if (requestToRetry && requestToRetry->taskId == taskId) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] handleCancelRequest: dropping requestToRetry "
+        "taskId={}",
+        taskId);
+    requestToRetry.reset();
+  }
+
+  auto slotIt = taskIdToSlotId.find(taskId);
+  if (slotIt != taskIdToSlotId.end()) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] handleCancelRequest: evicting slotId={} for "
+        "taskId={}",
+        slotIt->second, taskId);
+    memoryManager->evict(slotIt->second);
+    taskIdToSlotId.erase(slotIt);
+  }
+
+  cancelTombstones.rememberCancelTombstone(taskId);
+}
+
+bool BlazeRunner::isTaskRunning(uint32_t taskId) const {
+  return taskIdToSlotId.count(taskId) > 0;
 }
 
 inline std::optional<tt::domain::ManageMemoryTask>
@@ -279,6 +335,7 @@ void BlazeRunner::handleOutput(const pm::OutputMessage& output) {
         output.token_id, output.is_complete, context.ignoreEos, hitStop,
         context.tokensGenerated);
     slotContexts.erase(output.slot_id);
+    taskIdToSlotId.erase(taskId);
     tt::worker::SingleProcessWorkerMetrics::instance()
         .decrementActiveRequests();
   }
@@ -311,6 +368,7 @@ inline void BlazeRunner::evictSlot(uint32_t slotId) {
   if (it != slotContexts.end()) {
     TT_LOG_DEBUG("[BlazeRunner] evictSlot: slotId={}, had taskId={}", slotId,
                  it->second.taskId);
+    taskIdToSlotId.erase(it->second.taskId);
     slotContexts.erase(it);
     tt::worker::SingleProcessWorkerMetrics::instance()
         .decrementActiveRequests();
@@ -332,6 +390,27 @@ void BlazeRunner::handleRequest(
         "SP Pipeline does not support per-step guided decoding yet. "
         "Output may not conform to the requested schema.",
         request->taskId);
+  }
+
+  if (cancelTombstones.consumeCancelTombstone(request->taskId)) {
+    TT_LOG_DEBUG(
+        "[BlazeRunner] handleRequest: dropping cancelled request "
+        "taskId={}",
+        request->taskId);
+    return;
+  }
+
+  auto existingSlot = slotContexts.find(slotId);
+  if (existingSlot != slotContexts.end() &&
+      existingSlot->second.taskId != request->taskId) {
+    TT_LOG_WARN(
+        "[BlazeRunner] handleRequest: slotId={} is being repurposed from "
+        "taskId={} to taskId={}",
+        slotId, existingSlot->second.taskId, request->taskId);
+    taskIdToSlotId.erase(existingSlot->second.taskId);
+    slotContexts.erase(existingSlot);
+    tt::worker::SingleProcessWorkerMetrics::instance()
+        .decrementActiveRequests();
   }
 
   TT_LOG_DEBUG(
@@ -359,6 +438,7 @@ void BlazeRunner::handleRequest(
                   request->taskId, request->getSamplingParams().ignore_eos,
                   pipelineManager->get_spec_accepts(slotId),
                   pipelineManager->get_spec_rejects(slotId)});
+  taskIdToSlotId[request->taskId] = slotId;
   tt::worker::SingleProcessWorkerMetrics::instance().incrementActiveRequests();
 }
 

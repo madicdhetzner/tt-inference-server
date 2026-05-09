@@ -42,19 +42,19 @@ void BlazeMemoryManager::handleRequest(
     case domain::MemoryManagementAction::DEALLOCATE: {
       auto slotId = request.slotId;
       if (!pipelineManager.push_request(
-              utils::makeCancelRequest(request.taskId, slotId))) {
+              utils::makeEvictRequest(request.taskId, slotId))) {
         TT_LOG_DEBUG(
-            "[BlazeMemoryManager] DEALLOCATE push_request failed for "
+            "[BlazeMemoryManager] EVICT push_request failed for "
             "slotId={}; deferring retry for taskId={}",
             slotId, request.taskId);
         pendingRetry = request;
         return;
       }
-      cancelling.insert({request.taskId, slotId});
+      evicting.insert({request.taskId, slotId});
       TT_LOG_DEBUG(
-          "[BlazeMemoryManager] DEALLOCATE: taskId={}, slotId={}, "
-          "pending cancellations={}",
-          request.taskId, slotId, cancelling.size());
+          "[BlazeMemoryManager] EVICT: taskId={}, slotId={}, "
+          "pending evictions={}",
+          request.taskId, slotId, evicting.size());
       break;
     }
     case domain::MemoryManagementAction::MOVE: {
@@ -93,20 +93,20 @@ void BlazeMemoryManager::handleResponse(uint32_t taskId, uint32_t slotId) {
     resultQueue->push(result);
     return;
   }
-  if (auto it = cancelling.find(taskId); it != cancelling.end()) {
+  if (auto it = evicting.find(taskId); it != evicting.end()) {
     auto recordedSlotId = it->second;
-    cancelling.erase(it);
+    evicting.erase(it);
     if (slotId != recordedSlotId) {
       TT_LOG_ERROR(
-          "[BlazeMemoryManager] handleResponse[CANCEL]: taskId={} "
+          "[BlazeMemoryManager] handleResponse[EVICT]: taskId={} "
           "ack slotId={} does not match recorded slotId={}; evicting "
           "the recorded slot",
           taskId, slotId, recordedSlotId);
     }
     TT_LOG_DEBUG(
-        "[BlazeMemoryManager] handleResponse[CANCEL]: taskId={}, "
-        "slotId={}, remaining pending cancellations={}",
-        taskId, recordedSlotId, cancelling.size());
+        "[BlazeMemoryManager] handleResponse[EVICT]: taskId={}, "
+        "slotId={}, remaining pending evictions={}",
+        taskId, recordedSlotId, evicting.size());
     onEvict(recordedSlotId);
     return;
   }
