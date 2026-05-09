@@ -11,6 +11,7 @@
 
 #include "config/settings.hpp"
 #include "ipc/token_push.hpp"
+#include "runners/blaze_runner/pipeline_manager_adapter.hpp"
 #include "utils/logger.hpp"
 #include "worker/single_process_worker_metrics.hpp"
 
@@ -52,24 +53,31 @@ namespace utils = blaze_utils;
 BlazeRunner::BlazeRunner(const config::LLMConfig& config,
                          ipc::IResultQueue* resultQueue,
                          tt::ipc::ITaskQueue* taskQueue)
+    : BlazeRunner(config, resultQueue, taskQueue,
+                  std::make_unique<PipelineManagerAdapter>(
+                      makePipelineConfig(config),
+                      pm::ManagerParams{
+                          .max_users = static_cast<uint32_t>(
+                              tt::config::pmMaxUsers())})) {}
+
+BlazeRunner::BlazeRunner(const config::LLMConfig& config,
+                         ipc::IResultQueue* resultQueue,
+                         tt::ipc::ITaskQueue* taskQueue,
+                         std::unique_ptr<IPipelineManager> pipelineManager)
     : config(config),
       stopTokenIds(config.stop_token_ids.begin(), config.stop_token_ids.end()),
       resultQueue(resultQueue),
       taskQueue(taskQueue),
       lastOutputTime(std::chrono::steady_clock::now()),
       outputHangTimeout(tt::config::outputHangTimeoutMs()) {
-  TT_LOG_INFO("BlazeRunner: Constructing PipelineManager with SocketConfig...");
-  auto pipelineConfig = makePipelineConfig(config);
-  pm::ManagerParams managerParams{
-      .max_users = static_cast<uint32_t>(tt::config::pmMaxUsers())};
-  pipelineManager =
-      std::make_unique<pm::PipelineManager>(pipelineConfig, managerParams);
-  TT_LOG_INFO("BlazeRunner: PipelineManager constructed, calling start()...");
-  pipelineManager->start();
+  TT_LOG_INFO("BlazeRunner: PipelineManager injected, calling start()...");
+  this->pipelineManager = std::move(pipelineManager);
+  this->pipelineManager->start();
   TT_LOG_INFO(
       "BlazeRunner: PipelineManager started, creating MemoryManager...");
   memoryManager = std::make_unique<tt::services::BlazeMemoryManager>(
-      *pipelineManager, [this](uint32_t slotId) { evictSlot(slotId); });
+      *this->pipelineManager,
+      [this](uint32_t slotId) { evictSlot(slotId); });
   TT_LOG_INFO("BlazeRunner: Constructor complete");
 }
 

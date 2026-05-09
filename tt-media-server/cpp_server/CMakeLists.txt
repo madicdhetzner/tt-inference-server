@@ -298,6 +298,7 @@ set(LLM_RUNNER_LIB_SOURCES
 if(ENABLE_BLAZE)
     list(APPEND LLM_RUNNER_LIB_SOURCES
         src/runners/blaze_runner/blaze_runner.cpp
+        src/runners/blaze_runner/pipeline_manager_adapter.cpp
         src/services/memory_services/blaze_memory_manager.cpp
     )
     message(STATUS "llm_runner_lib: including pipeline_manager-dependent sources (ENABLE_BLAZE=ON)")
@@ -541,6 +542,15 @@ target_include_directories(worker_manager_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/runners
 )
 
+# BlazeRunner unit test: exercises memory allocation → submit → token output.
+add_executable(blaze_runner_test tests/blaze_runner_test.cpp)
+target_link_libraries(blaze_runner_test PRIVATE
+    llm_runner_lib GTest::gtest_main)
+target_include_directories(blaze_runner_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/runners
+)
+
 # LLMService unit test: drives processStreamingRequest in-process.
 # Pulls in the same translation units that the main server links so the
 # real LLMService can be constructed without forking workers.
@@ -587,6 +597,7 @@ gtest_discover_tests(concurrent_map_test)
 gtest_discover_tests(session_test)
 gtest_discover_tests(session_manager_test)
 gtest_discover_tests(worker_manager_test)
+gtest_discover_tests(blaze_runner_test)
 gtest_discover_tests(llm_service_test)
 gtest_discover_tests(model_service_registry_test)
 

@@ -15,8 +15,8 @@
 #include "domain/manage_memory.hpp"
 #include "ipc/result_queue.hpp"
 #include "ipc/task_queue.hpp"
-#include "pipeline_manager/pipeline_manager.hpp"
 #include "runners/blaze_runner/blaze_utils.hpp"
+#include "runners/blaze_runner/i_pipeline_manager.hpp"
 #include "runners/runner_interface.hpp"
 #include "services/memory_services/memory_manager.hpp"
 
@@ -30,6 +30,15 @@ class BlazeRunner : public IRunner {
  public:
   BlazeRunner(const tt::config::LLMConfig& config,
               ipc::IResultQueue* resultQueue, tt::ipc::ITaskQueue* taskQueue);
+
+  /**
+   * Test-only constructor that injects a pre-built IPipelineManager.
+   * Ownership of @p pipelineManager is transferred into the runner.
+   */
+  BlazeRunner(const tt::config::LLMConfig& config,
+              ipc::IResultQueue* resultQueue, tt::ipc::ITaskQueue* taskQueue,
+              std::unique_ptr<IPipelineManager> pipelineManager);
+
   ~BlazeRunner() override;
 
   void run() override;
@@ -56,7 +65,7 @@ class BlazeRunner : public IRunner {
   ipc::IResultQueue* resultQueue;
   tt::ipc::ITaskQueue* taskQueue;
   std::unique_ptr<tt::domain::llm::Sequence> requestToRetry;
-  std::unique_ptr<pm::PipelineManager> pipelineManager;
+  std::unique_ptr<IPipelineManager> pipelineManager;
   std::unordered_map<uint32_t, blaze_utils::SlotContext> slotContexts;
   std::atomic<bool> stopped{false};
   std::unique_ptr<tt::services::MemoryManager> memoryManager;

@@ -7,8 +7,7 @@ namespace tt::services {
 namespace utils = tt::runners::blaze_utils;
 
 BlazeMemoryManager::BlazeMemoryManager(
-    tt_blaze::pipeline_manager::PipelineManager& pipelineManager,
-    onEvictCb onEvict)
+    tt::runners::IPipelineManager& pipelineManager, onEvictCb onEvict)
     : pipelineManager(pipelineManager), onEvict(onEvict) {}
 
 std::optional<domain::ManageMemoryTask> BlazeMemoryManager::getRequest() {
