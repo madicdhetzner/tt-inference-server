@@ -497,6 +497,13 @@ target_include_directories(worker_metrics_shm_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# SlotRingBuffer layout + functional test
+add_executable(slot_ring_buffer_test tests/slot_ring_buffer_test.cpp)
+target_link_libraries(slot_ring_buffer_test PRIVATE llm_runner_lib GTest::gtest_main)
+target_include_directories(slot_ring_buffer_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_executable(model_service_registry_test
     tests/model_service_registry_test.cpp
     src/services/service_container.cpp
